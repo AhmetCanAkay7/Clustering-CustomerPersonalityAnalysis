@@ -1,0 +1,4 @@
+Algorithm,Best Parameters,Number of Clusters,Noise Ratio,Smallest Cluster Size,Smallest Cluster Ratio,Silhouette Score,Davies-Bouldin Index,Calinski-Harabasz Index,Runtime Seconds,Short Interpretation
+K-Means,"k=2, n_init=20",2,0.0,926,0.4139472507822977,0.19935121944049308,1.989589909836483,490.7230239602231,0.4517298999999184,"Centroid-based segments with compact, easy-to-profile customer groups."
+AGNES,"n_clusters=2, linkage=ward",2,0.0,994,0.4443451050514081,0.14467163460453292,2.1740900912309034,385.1364319063655,0.2889583999999559,Hierarchical segments useful for comparing nested customer structure.
+DBSCAN,"space=scaled_full, eps=4.0, min_samples=15",2,0.42378185069289226,40,0.031031807602792862,0.2823935546047426,1.1141057146168365,86.92431766112065,0.041179100000135804,Density-based grouping that also marks sparse customers as noise.

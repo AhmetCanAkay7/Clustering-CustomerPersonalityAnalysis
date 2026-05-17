@@ -1,0 +1,16 @@
+# Project files that should not be published
+docs/
+report_assets/
+we_swear.txt
+
+# Python cache and local runtime artifacts
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Local environment files
+.venv/
+venv/
+env/
+.env
+
