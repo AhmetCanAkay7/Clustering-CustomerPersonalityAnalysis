@@ -1,4 +1,4 @@
-# CSE4063 Data Mining Project #2 - Clustering Analysis
+# CSE4063 Data Mining Project - Clustering Analysis
 
 This repository contains the Clustering Analysis part of CSE4063 Fundamentals of Data Mining Project #2.
 
@@ -50,7 +50,4 @@ The script expects `data/raw/marketing_campaign.csv`. If it is missing, it attem
 - `report_assets/demo_notes.md`
 - `we_swear.txt`
 
-## Notes
-
-This implementation focuses only on the clustering part of the project. It does not implement Apriori, FP-Growth, or ECLAT because those belong to the Frequent Pattern Mining part.
 
