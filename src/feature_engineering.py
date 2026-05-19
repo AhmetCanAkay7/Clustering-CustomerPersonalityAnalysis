@@ -35,6 +35,37 @@ CAMPAIGN_COLS = [
 
 CATEGORICAL_COLS = ["Education", "Marital_Status"]
 
+# Non-redundant numeric features selected for clustering.
+# Individual spending columns (MntWines, ...) are excluded because
+# Total_Spending already captures total spend.  Individual purchase-count
+# columns are excluded because Total_Purchases and channel-ratio features
+# capture the same information.  Kidhome/Teenhome are captured by
+# Total_Children.  Campaign columns are captured by Total_Accepted_Campaigns.
+# Complain has near-zero variance.
+CLUSTERING_NUMERIC_COLS = [
+    "Age",
+    "Income",
+    "Recency",
+    "Customer_Tenure_Days",
+    "Total_Spending",
+    "Total_Purchases",
+    "Total_Children",
+    "Total_Accepted_Campaigns",
+    "Average_Spending_Per_Purchase",
+    "Web_Purchase_Ratio",
+    "Store_Purchase_Ratio",
+    "Catalog_Purchase_Ratio",
+    "Deal_Purchase_Ratio",
+    "NumWebVisitsMonth",
+]
+
+
+def select_clustering_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Select non-redundant features for clustering input."""
+    numeric = [c for c in CLUSTERING_NUMERIC_COLS if c in df.columns]
+    categorical = [c for c in CATEGORICAL_COLS if c in df.columns]
+    return df[numeric + categorical].copy()
+
 
 @dataclass
 class FeatureSet:

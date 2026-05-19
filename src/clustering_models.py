@@ -8,7 +8,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.cluster import AgglomerativeClustering, DBSCAN, KMeans
-from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
 
 from evaluation import evaluate_clustering
@@ -32,10 +31,28 @@ def _cluster_size_metrics(labels: np.ndarray) -> dict[str, Any]:
     }
 
 
-def _best_by_metrics(results: pd.DataFrame, min_cluster_ratio: float = 0.05) -> pd.Series:
+def _best_by_metrics(
+    results: pd.DataFrame,
+    min_cluster_ratio: float = 0.05,
+    min_clusters: int = 2,
+) -> pd.Series:
+    """Select the best configuration from a tuning results table.
+
+    Parameters
+    ----------
+    min_clusters : int
+        Minimum number of clusters required.  Set to 3 or higher to force
+        richer segmentation when the dataset supports it.
+    """
     valid = results.dropna(subset=["silhouette"]).copy()
     if valid.empty:
         return results.iloc[0]
+
+    # Prefer configurations with at least *min_clusters* clusters.
+    if "n_clusters" in valid.columns:
+        enough = valid[valid["n_clusters"] >= min_clusters]
+        if not enough.empty:
+            valid = enough
 
     interpretable = valid[
         (valid["min_cluster_ratio"] >= min_cluster_ratio)
@@ -55,6 +72,7 @@ def tune_kmeans(
     X: np.ndarray,
     k_values: range = range(2, 11),
     random_state: int = 42,
+    min_clusters: int = 3,
 ) -> tuple[pd.DataFrame, KMeans, np.ndarray, dict[str, Any]]:
     """Tune K-Means by comparing standard clustering metrics."""
     rows: list[dict[str, Any]] = []
@@ -83,7 +101,7 @@ def tune_kmeans(
         fitted[k] = (model, labels)
 
     results = pd.DataFrame(rows)
-    best = _best_by_metrics(results)
+    best = _best_by_metrics(results, min_clusters=min_clusters)
     best_k = int(best["k"])
     best_model, best_labels = fitted[best_k]
     best_params = {"n_clusters": best_k, "n_init": 20, "max_iter": 300}
@@ -94,6 +112,7 @@ def tune_agnes(
     X: np.ndarray,
     n_clusters_values: range = range(2, 11),
     linkage_methods: tuple[str, ...] = ("ward", "complete", "average"),
+    min_clusters: int = 3,
 ) -> tuple[pd.DataFrame, AgglomerativeClustering, np.ndarray, dict[str, Any]]:
     """Tune AGNES/Agglomerative Clustering over cluster counts and linkages."""
     rows: list[dict[str, Any]] = []
@@ -121,7 +140,7 @@ def tune_agnes(
             fitted[(n_clusters, linkage)] = (model, labels)
 
     results = pd.DataFrame(rows)
-    best = _best_by_metrics(results)
+    best = _best_by_metrics(results, min_clusters=min_clusters)
     key = (int(best["n_clusters_param"]), str(best["linkage"]))
     best_model, best_labels = fitted[key]
     best_params = {"n_clusters": key[0], "linkage": key[1]}
@@ -136,45 +155,41 @@ def k_distance_values(X: np.ndarray, min_samples: int = 10) -> np.ndarray:
 
 
 def tune_dbscan(
-    X_scaled: np.ndarray,
-    random_state: int = 42,
-) -> tuple[pd.DataFrame, DBSCAN, np.ndarray, dict[str, Any], np.ndarray]:
-    """Tune DBSCAN on both full scaled data and five-component PCA data."""
-    pca = PCA(n_components=5, random_state=random_state)
-    X_pca5 = pca.fit_transform(X_scaled)
+    X: np.ndarray,
+    eps_values: list[float] | None = None,
+    min_samples_values: list[int] | None = None,
+) -> tuple[pd.DataFrame, DBSCAN, np.ndarray, dict[str, Any]]:
+    """Tune DBSCAN over an eps / min_samples grid.
 
-    spaces = {
-        "scaled_full": X_scaled,
-        "pca_5": X_pca5,
-    }
-    eps_grid = {
-        "scaled_full": [2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0, 7.0, 8.0],
-        "pca_5": [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5],
-    }
-    min_samples_values = [5, 10, 15]
+    Unlike the previous version this no longer creates an internal PCA
+    representation because the caller is expected to pass already
+    dimensionality-reduced data.
+    """
+    if eps_values is None:
+        eps_values = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0, 7.0]
+    if min_samples_values is None:
+        min_samples_values = [5, 10, 15]
 
     rows: list[dict[str, Any]] = []
-    fitted: dict[tuple[str, float, int], tuple[DBSCAN, np.ndarray, np.ndarray]] = {}
+    fitted: dict[tuple[float, int], tuple[DBSCAN, np.ndarray]] = {}
 
-    for space_name, X_space in spaces.items():
-        for eps in eps_grid[space_name]:
-            for min_samples in min_samples_values:
-                model = DBSCAN(eps=eps, min_samples=min_samples)
-                start = perf_counter()
-                labels = model.fit_predict(X_space)
-                runtime = perf_counter() - start
-                metrics = evaluate_clustering(X_space, labels)
-                rows.append(
-                    {
-                        "space": space_name,
-                        "eps": eps,
-                        "min_samples": min_samples,
-                        "runtime_seconds": runtime,
-                        **_cluster_size_metrics(labels),
-                        **metrics,
-                    }
-                )
-                fitted[(space_name, eps, min_samples)] = (model, labels, X_space)
+    for eps in eps_values:
+        for min_samples in min_samples_values:
+            model = DBSCAN(eps=eps, min_samples=min_samples)
+            start = perf_counter()
+            labels = model.fit_predict(X)
+            runtime = perf_counter() - start
+            metrics = evaluate_clustering(X, labels)
+            rows.append(
+                {
+                    "eps": eps,
+                    "min_samples": min_samples,
+                    "runtime_seconds": runtime,
+                    **_cluster_size_metrics(labels),
+                    **metrics,
+                }
+            )
+            fitted[(eps, min_samples)] = (model, labels)
 
     results = pd.DataFrame(rows)
     valid = results.dropna(subset=["silhouette"]).copy()
@@ -196,14 +211,14 @@ def tune_dbscan(
             ascending=[False, True, True],
         ).iloc[0]
     else:
-        best = results.sort_values(["n_clusters", "noise_ratio"], ascending=[False, True]).iloc[0]
+        best = results.sort_values(
+            ["n_clusters", "noise_ratio"], ascending=[False, True]
+        ).iloc[0]
 
-    key = (str(best["space"]), float(best["eps"]), int(best["min_samples"]))
-    best_model, best_labels, best_X = fitted[key]
+    key = (float(best["eps"]), int(best["min_samples"]))
+    best_model, best_labels = fitted[key]
     best_params = {
-        "space": key[0],
-        "eps": key[1],
-        "min_samples": key[2],
-        "pca_5_explained_variance": float(pca.explained_variance_ratio_.sum()),
+        "eps": key[0],
+        "min_samples": key[1],
     }
-    return results, best_model, best_labels, best_params, best_X
+    return results, best_model, best_labels, best_params

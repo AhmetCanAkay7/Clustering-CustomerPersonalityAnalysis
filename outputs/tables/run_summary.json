@@ -1,13 +1,15 @@
 {
   "raw_rows": 2240,
   "raw_columns": 29,
+  "selected_features_scaled_columns": 25,
+  "pca_components": 15,
+  "pca_explained_variance_total": 0.8737727569920014,
   "processed_rows": 2237,
-  "processed_columns": 44,
-  "best_algorithm": "K-Means",
+  "processed_columns": 15,
+  "best_algorithm": "AGNES",
   "best_parameters": {
-    "n_clusters": 2,
-    "n_init": 20,
-    "max_iter": 300
+    "n_clusters": 4,
+    "linkage": "ward"
   },
   "preprocessing": {
     "initial_rows": 2240,

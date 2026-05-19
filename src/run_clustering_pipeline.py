@@ -19,7 +19,12 @@ from data_preprocessing import (
     preprocess_data,
 )
 from evaluation import evaluate_clustering, format_metric
-from feature_engineering import MNT_COLS, add_customer_features, encode_and_scale
+from feature_engineering import (
+    MNT_COLS,
+    add_customer_features,
+    encode_and_scale,
+    select_clustering_features,
+)
 from visualization import (
     plot_cluster_profile_bars,
     plot_correlation_heatmap,
@@ -169,6 +174,7 @@ def create_pca_frame(X_scaled: np.ndarray) -> tuple[pd.DataFrame, pd.DataFrame]:
 def segment_name(row: pd.Series, features_df: pd.DataFrame) -> str:
     """Assign a business-friendly segment name from profile statistics."""
     spending_q75 = features_df["Total_Spending"].quantile(0.75)
+    spending_q55 = features_df["Total_Spending"].quantile(0.55)
     spending_q40 = features_df["Total_Spending"].quantile(0.40)
     income_q70 = features_df["Income"].quantile(0.70)
     income_q40 = features_df["Income"].quantile(0.40)
@@ -179,6 +185,7 @@ def segment_name(row: pd.Series, features_df: pd.DataFrame) -> str:
     catalog_q70 = features_df["NumCatalogPurchases"].quantile(0.70)
     store_q70 = features_df["NumStorePurchases"].quantile(0.70)
     campaign_q75 = features_df["Total_Accepted_Campaigns"].quantile(0.75)
+    wine_q60 = features_df["MntWines"].quantile(0.60)
 
     spending = row.get("Total_Spending_median", 0)
     income = row.get("Income_median", 0)
@@ -189,6 +196,7 @@ def segment_name(row: pd.Series, features_df: pd.DataFrame) -> str:
     catalog = row.get("NumCatalogPurchases_median", 0)
     store = row.get("NumStorePurchases_median", 0)
     campaigns = row.get("Total_Accepted_Campaigns_mean", 0)
+    wine = row.get("MntWines_median", 0)
 
     if spending >= spending_q75 and income >= income_q70:
         return "High Value Affluent Buyers"
@@ -204,6 +212,11 @@ def segment_name(row: pd.Series, features_df: pd.DataFrame) -> str:
         return "Deal-Oriented Value Seekers"
     if recency >= recency_q70 and spending <= spending_q40:
         return "Inactive Low-Engagement Customers"
+    # Mid-tier differentiation: separate wine-heavy from balanced spenders
+    if spending >= spending_q55 and wine >= wine_q60:
+        return "Wine-Enthusiast Mid-Tier Customers"
+    if spending >= spending_q40:
+        return "Balanced Mid-Tier Customers"
     return "Moderate Regular Customers"
 
 
@@ -248,16 +261,14 @@ def best_model_name(comparison: pd.DataFrame) -> str:
 
 
 def build_comparison(
-    X_scaled: np.ndarray,
-    dbscan_X: np.ndarray,
+    X: np.ndarray,
     labels: dict[str, np.ndarray],
     params: dict[str, dict[str, Any]],
     tuning_tables: dict[str, pd.DataFrame],
 ) -> pd.DataFrame:
     rows = []
     for algorithm in ["K-Means", "AGNES", "DBSCAN"]:
-        X_eval = dbscan_X if algorithm == "DBSCAN" else X_scaled
-        metrics = evaluate_clustering(X_eval, labels[algorithm])
+        metrics = evaluate_clustering(X, labels[algorithm])
         table = tuning_tables[algorithm]
         if algorithm == "K-Means":
             row = table.loc[table["k"] == params[algorithm]["n_clusters"]].iloc[0]
@@ -277,13 +288,12 @@ def build_comparison(
             short = "Hierarchical segments useful for comparing nested customer structure."
         else:
             row = table[
-                (table["space"] == params[algorithm]["space"])
-                & (table["eps"] == params[algorithm]["eps"])
+                (table["eps"] == params[algorithm]["eps"])
                 & (table["min_samples"] == params[algorithm]["min_samples"])
             ].iloc[0]
             runtime = float(row["runtime_seconds"])
             best_parameters = (
-                f"space={params[algorithm]['space']}, eps={params[algorithm]['eps']}, "
+                f"eps={params[algorithm]['eps']}, "
                 f"min_samples={params[algorithm]['min_samples']}"
             )
             short = "Density-based grouping that also marks sparse customers as noise."
@@ -373,15 +383,17 @@ The objective of the clustering part is to segment customers based on demographi
 - `Year_Birth` was converted into `Age`.
 - Age outliers above 100 were removed. Rows removed: {preprocessing_summary['rows_removed_age_over_100']}.
 - Engineered features include `Total_Spending`, `Total_Children`, `Total_Purchases`, `Total_Accepted_Campaigns`, spending per purchase, and purchase-channel ratios.
+- **Feature selection**: To avoid redundancy in distance calculations, only non-redundant features were selected for clustering input. Individual spending columns (`MntWines`, etc.) were excluded because `Total_Spending` captures the same information; individual purchase counts were excluded in favour of `Total_Purchases` and channel-ratio features; `Kidhome`/`Teenhome` were replaced by `Total_Children`; campaign acceptance columns by `Total_Accepted_Campaigns`; and `Complain` was removed due to near-zero variance.
 - `Education` and `Marital_Status` were one-hot encoded with the first category dropped.
-- All encoded features were standardized with `StandardScaler` before clustering because K-Means, AGNES, and DBSCAN are distance-based.
+- All selected and encoded features were standardized with `StandardScaler`.
+- **PCA dimensionality reduction**: PCA was applied to the scaled feature matrix, retaining enough components to explain at least 85 % of the total variance. This reduces the curse-of-dimensionality effect and improves distance-based clustering quality.
 
 ## Implementation Details
 
-- K-Means was implemented with scikit-learn `KMeans`. Values of k from 2 to 10 were tested using inertia, silhouette score, Davies-Bouldin index, Calinski-Harabasz index, and runtime.
-- AGNES was implemented with scikit-learn `AgglomerativeClustering`. Cluster counts from 2 to 10 and `ward`, `complete`, and `average` linkage methods were tested.
-- DBSCAN was implemented with scikit-learn `DBSCAN`. The pipeline created a k-distance plot and tested multiple `eps` and `min_samples` values on both the full scaled feature matrix and a 5-component PCA representation.
-- PCA with two components was used only for visualization of the final cluster assignments.
+- K-Means was implemented with scikit-learn `KMeans`. Values of k from 2 to 10 were tested using inertia, silhouette score, Davies-Bouldin index, Calinski-Harabasz index, and runtime. The best k was selected from k >= 3 to ensure richer segmentation.
+- AGNES was implemented with scikit-learn `AgglomerativeClustering`. Cluster counts from 2 to 10 and `ward`, `complete`, and `average` linkage methods were tested. Selection also required at least 3 clusters.
+- DBSCAN was implemented with scikit-learn `DBSCAN`. A k-distance plot was created and multiple `eps` and `min_samples` values were tested on the PCA-reduced feature matrix.
+- PCA with two components was used for visualization of the final cluster assignments.
 
 ## Model Evaluation and Performance Results
 
@@ -410,9 +422,9 @@ Important figures are saved under `outputs/figures/`, including missing values, 
 
 ## Conclusion
 
-The clustering pipeline successfully preprocesses the customer data, engineers segmentation features, compares K-Means, AGNES, and DBSCAN, and profiles the resulting customer groups. In this run, **{best_algorithm}** provides the primary segment interpretation. K-Means and AGNES are generally easier to interpret for this dataset because they force every customer into a segment, while DBSCAN is useful for detecting sparse or unusual customers but is more sensitive to `eps`, `min_samples`, and the chosen feature space.
+The clustering pipeline successfully preprocesses the customer data, selects non-redundant features, applies PCA for dimensionality reduction, and compares K-Means, AGNES, and DBSCAN on the reduced representation. In this run, **{best_algorithm}** provides the primary segment interpretation. K-Means and AGNES are generally easier to interpret for this dataset because they force every customer into a segment, while DBSCAN is useful for detecting sparse or unusual customers but is more sensitive to `eps` and `min_samples`.
 
-Limitations include sensitivity to preprocessing choices, one-hot encoded categorical distance effects, and the lack of external labels for ground-truth validation. Possible improvements include trying RobustScaler, additional feature selection, UMAP/t-SNE visualization, and validating segments with domain experts.
+Limitations include sensitivity to preprocessing choices and the lack of external labels for ground-truth validation. Possible improvements include trying RobustScaler, UMAP/t-SNE visualization, and validating segments with domain experts.
 """
     (REPORT_DIR / "clustering_report_section.md").write_text(content, encoding="utf-8")
 
@@ -507,8 +519,9 @@ def main() -> None:
 
     preprocessing = preprocess_data(raw_df)
     features_df = add_customer_features(preprocessing.data)
-    feature_set = encode_and_scale(features_df)
 
+    # ---- full feature set (kept for profiling & processed CSVs) ----
+    feature_set = encode_and_scale(features_df)
     feature_set.original_features.to_csv(
         PROCESSED_DIR / "customer_personality_features_unscaled.csv", index=False
     )
@@ -521,11 +534,37 @@ def main() -> None:
 
     make_eda_figures(raw_df, features_df)
 
-    X_scaled = feature_set.scaled_features.to_numpy()
-    pca_df, pca_variance = create_pca_frame(X_scaled)
+    # ---- feature selection: keep only non-redundant columns ----
+    clustering_df = select_clustering_features(features_df)
+    clustering_set = encode_and_scale(clustering_df)
+    X_selected_scaled = clustering_set.scaled_features.to_numpy()
+
+    # ---- PCA dimensionality reduction (retain >= 85% variance) ----
+    pca_full = PCA(random_state=42)
+    pca_full.fit(X_selected_scaled)
+    cumvar = np.cumsum(pca_full.explained_variance_ratio_)
+    n_components = int(np.argmax(cumvar >= 0.85)) + 1
+    n_components = max(n_components, 2)
+
+    pca_clustering = PCA(n_components=n_components, random_state=42)
+    X_pca = pca_clustering.fit_transform(X_selected_scaled)
+
+    pca_variance = pd.DataFrame(
+        {
+            "Component": [f"PC{i+1}" for i in range(n_components)],
+            "Explained Variance Ratio": pca_clustering.explained_variance_ratio_,
+            "Cumulative Variance": np.cumsum(pca_clustering.explained_variance_ratio_),
+        }
+    )
     pca_variance.to_csv(TABLES_DIR / "pca_explained_variance.csv", index=False)
 
-    kmeans_results, _, labels_kmeans, params_kmeans = tune_kmeans(X_scaled)
+    # 2-D frame for scatter-plot visualisation (first 2 PCA components)
+    pca_df = pd.DataFrame(X_pca[:, :2], columns=["PC1", "PC2"])
+
+    # ---- K-Means (min_clusters=3) ----
+    kmeans_results, _, labels_kmeans, params_kmeans = tune_kmeans(
+        X_pca, min_clusters=3
+    )
     kmeans_results.to_csv(TABLES_DIR / "kmeans_tuning_results.csv", index=False)
     plot_metric_line(
         kmeans_results,
@@ -548,7 +587,10 @@ def main() -> None:
         "K-Means Clusters on PCA Projection",
     )
 
-    agnes_results, _, labels_agnes, params_agnes = tune_agnes(X_scaled)
+    # ---- AGNES (min_clusters=3) ----
+    agnes_results, _, labels_agnes, params_agnes = tune_agnes(
+        X_pca, min_clusters=3
+    )
     agnes_results.to_csv(TABLES_DIR / "agnes_tuning_results.csv", index=False)
     plot_pca_clusters(
         pca_df,
@@ -556,18 +598,19 @@ def main() -> None:
         FIGURES_DIR / "agnes_pca_clusters.png",
         "AGNES Clusters on PCA Projection",
     )
-    plot_dendrogram_sample(X_scaled, FIGURES_DIR / "agnes_dendrogram_sample.png")
+    plot_dendrogram_sample(X_pca, FIGURES_DIR / "agnes_dendrogram_sample.png")
 
-    k_distances = k_distance_values(X_scaled, min_samples=10)
+    # ---- DBSCAN ----
+    k_distances = k_distance_values(X_pca, min_samples=10)
     plot_k_distance(
         k_distances,
         FIGURES_DIR / "dbscan_k_distance.png",
         "DBSCAN k-Distance Plot (min_samples=10)",
     )
-    dbscan_results, _, labels_dbscan, params_dbscan, dbscan_X = tune_dbscan(X_scaled)
+    dbscan_results, _, labels_dbscan, params_dbscan = tune_dbscan(X_pca)
     dbscan_results.to_csv(TABLES_DIR / "dbscan_tuning_results.csv", index=False)
     dbscan_noise = dbscan_results[
-        ["space", "eps", "min_samples", "n_clusters", "noise_ratio", "silhouette"]
+        ["eps", "min_samples", "n_clusters", "noise_ratio", "silhouette"]
     ].copy()
     dbscan_noise.to_csv(TABLES_DIR / "dbscan_noise_ratio_table.csv", index=False)
     plot_pca_clusters(
@@ -577,6 +620,7 @@ def main() -> None:
         "DBSCAN Clusters on PCA Projection",
     )
 
+    # ---- comparison & profiling ----
     labels_by_algorithm = {
         "K-Means": labels_kmeans,
         "AGNES": labels_agnes,
@@ -594,7 +638,7 @@ def main() -> None:
     }
 
     comparison = build_comparison(
-        X_scaled, dbscan_X, labels_by_algorithm, params_by_algorithm, tuning_tables
+        X_pca, labels_by_algorithm, params_by_algorithm, tuning_tables
     )
     comparison.to_csv(TABLES_DIR / "clustering_comparison.csv", index=False)
     comparison_md = comparison.copy()
@@ -638,8 +682,11 @@ def main() -> None:
     run_summary = {
         "raw_rows": int(raw_df.shape[0]),
         "raw_columns": int(raw_df.shape[1]),
-        "processed_rows": int(feature_set.scaled_features.shape[0]),
-        "processed_columns": int(feature_set.scaled_features.shape[1]),
+        "selected_features_scaled_columns": int(X_selected_scaled.shape[1]),
+        "pca_components": n_components,
+        "pca_explained_variance_total": float(cumvar[n_components - 1]),
+        "processed_rows": int(X_pca.shape[0]),
+        "processed_columns": int(X_pca.shape[1]),
         "best_algorithm": selected_best,
         "best_parameters": params_by_algorithm[selected_best],
         "preprocessing": preprocessing.summary,
@@ -655,6 +702,7 @@ def main() -> None:
 
     print("Clustering pipeline completed.")
     print(f"Best algorithm: {selected_best}")
+    print(f"PCA components: {n_components} (variance explained: {cumvar[n_components - 1]:.2%})")
     print(f"Outputs written under: {PROJECT_ROOT}")
 
 
