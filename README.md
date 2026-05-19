@@ -1,4 +1,4 @@
-# CSE4063 Data Mining Project #2 - Clustering Analysis
+# CSE4063 Data Mining Project - Clustering Analysis
 
 This repository contains the Clustering Analysis part of CSE4063 Fundamentals of Data Mining Project #2.
 
